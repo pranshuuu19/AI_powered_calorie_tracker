@@ -4,12 +4,12 @@ app.py
 AI Calorie & Nutrition Tracker — Streamlit frontend.
 
 Log meals in natural language (tagged by meal type), have an LLM parse them
-into structured nutrition data, persist to SQLite, and view per-meal and
-daily totals plus longer-term trends.
+into structured nutrition data, persist to SQLite, and view per-meal totals,
+daily totals, rolling averages, hydration, and a logging streak.
 """
 
 import os
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 
 import streamlit as st
 import plotly.express as px
@@ -25,11 +25,30 @@ st.set_page_config(page_title="AI Calorie & Nutrition Tracker", page_icon="🍽�
 
 db.init_db()
 
-api_key = os.environ.get("GROQ_API_KEY")
+def get_api_key():
+    """
+    Checks os.environ first (local dev via .env), then falls back to
+    st.secrets (Streamlit Community Cloud's secrets manager, configured in
+    the app's dashboard under Settings -> Secrets — not read from .env,
+    since .env is gitignored and never reaches the deployed app).
+    """
+    key = os.environ.get("GROQ_API_KEY")
+    if key:
+        return key
+    try:
+        return st.secrets["GROQ_API_KEY"]
+    except Exception:
+        return None
+
+
+api_key = get_api_key()
 if not api_key:
     st.error(
-        "GROQ_API_KEY not found. Copy `.env.example` to `.env`, add your key, "
-        "and restart the app."
+        "GROQ_API_KEY not found.\n\n"
+        "- Running locally? Copy `.env.example` to `.env` and add your key.\n"
+        "- Running on Streamlit Community Cloud? Add it under your app's "
+        "**Settings -> Secrets** in the dashboard (not via .env, which never "
+        "reaches the deployed app)."
     )
     st.stop()
 llm_parser.configure(api_key)
@@ -50,7 +69,46 @@ with st.sidebar:
         st.success(f"Goal set to {new_goal} kcal/day")
         st.rerun()
 
+    st.divider()
+    st.header("💧 Hydration")
+    water_today = db.get_water_today()
+    st.metric("Glasses today", water_today)
+    wc1, wc2 = st.columns(2)
+    with wc1:
+        if st.button("+1 glass", use_container_width=True):
+            db.log_water(1)
+            st.rerun()
+    with wc2:
+        if st.button("+1 bottle (3)", use_container_width=True):
+            db.log_water(3)
+            st.rerun()
+
+    st.divider()
+    streak = db.get_logging_streak()
+    if streak > 0:
+        st.metric("🔥 Logging streak", f"{streak} day{'s' if streak != 1 else ''}")
+    else:
+        st.caption("Log a meal today to start a streak!")
+
 st.subheader("Log a meal")
+
+# Quick-add for frequently logged meals — re-inserts the same parsed items
+# without another AI call, useful for repetitive hostel/mess meals.
+frequent = db.get_frequent_meals(limit=5)
+if not frequent.empty:
+    with st.expander("⚡ Quick add a frequent meal"):
+        quick_meal_type = st.selectbox("Meal", db.MEAL_TYPES, key="quick_meal_type")
+        for _, row in frequent.iterrows():
+            qcol1, qcol2 = st.columns([4, 1])
+            with qcol1:
+                st.write(f"{row['raw_input']}  \n:gray[logged {row['times_logged']}x]")
+            with qcol2:
+                if st.button("Add", key=f"quickadd_{row['raw_input']}"):
+                    items = db.get_items_for_raw_input(row["raw_input"])
+                    db.insert_food_items(row["raw_input"], items, quick_meal_type)
+                    st.success(f"Re-logged '{row['raw_input']}' under {quick_meal_type}")
+                    st.rerun()
+
 meal_type = st.selectbox("Which meal is this?", db.MEAL_TYPES)
 user_input = st.text_area(
     "Describe what you ate",
@@ -105,9 +163,7 @@ else:
     st.markdown("---")
     goal = db.get_latest_goal()
     goal_text = f" / {goal:.0f} kcal goal" if goal else ""
-    st.markdown(
-        f"### Day Total: {day_total['calories']:.0f} kcal{goal_text}"
-    )
+    st.markdown(f"### Day Total: {day_total['calories']:.0f} kcal{goal_text}")
     st.caption(
         f"Protein: {day_total['protein_g']:.0f}g · "
         f"Carbs: {day_total['carbs_g']:.0f}g · "
@@ -119,6 +175,31 @@ else:
             st.caption(f"{remaining:.0f} kcal remaining today")
         else:
             st.caption(f"{abs(remaining):.0f} kcal over today's goal")
+
+    # Gentle, non-judgmental nudges — informational only, never alarmist.
+    nudges = []
+    if day_total["calories"] > 0:
+        protein_calories = day_total["protein_g"] * 4
+        protein_pct = protein_calories / day_total["calories"] * 100
+        if protein_pct < 15:
+            nudges.append(
+                "Protein looks a bit low relative to today's other macros — "
+                "dal, eggs, paneer, curd, or chana are cheap, easy ways to round it out."
+            )
+    current_hour = datetime.now().hour
+    if current_hour >= 14 and meal_totals[meal_totals["meal_type"] == "Breakfast"].empty:
+        nudges.append("No breakfast logged today — not a problem if that's intentional, just flagging it.")
+    for n in nudges:
+        st.caption(f"💡 {n}")
+
+    # 7-day rolling average — smooths out single-day noise (exam days, etc.)
+    rolling = db.get_rolling_average(days=7)
+    if rolling["days_logged"] > 1:
+        st.caption(
+            f"📊 7-day average ({rolling['days_logged']} day(s) logged): "
+            f"{rolling['calories']:.0f} kcal/day · "
+            f"P {rolling['protein_g']:.0f}g · C {rolling['carbs_g']:.0f}g · F {rolling['fat_g']:.0f}g"
+        )
 
 st.divider()
 st.subheader("Trends")
@@ -158,8 +239,6 @@ else:
     fig2 = px.line(daily, x="log_date", y=["protein_g", "carbs_g", "fat_g"], title="Daily Macros (g)")
     st.plotly_chart(fig2, use_container_width=True)
 
-    # Calories by meal type per day — shows how intake is distributed across
-    # breakfast/lunch/snacks/dinner over time, not just the daily total.
     by_meal = (
         logs_df.groupby(["log_date", "meal_type"])
         .agg(calories=("calories", "sum"))
