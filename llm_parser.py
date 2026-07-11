@@ -1,20 +1,3 @@
-"""
-llm_parser.py
-
-Handles the LLM API call and the prompt engineering that turns a natural-
-language food description into structured nutrition data.
-
-Uses Groq's API (free tier, no billing/card required) with Llama models.
-Originally built against Gemini, but Gemini's free tier requires a linked
-billing account even for the free quota — Groq doesn't, so this project
-uses Groq instead.
-
-The parsing/validation logic is factored into `_parse_response_text()` on
-purpose, separate from the actual network call in `parse_food_description()`.
-This makes the parsing logic unit-testable without needing a live API key or
-network access.
-"""
-
 import os
 import json
 

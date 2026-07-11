@@ -1,11 +1,3 @@
-"""
-db.py
-
-SQLite persistence layer for the AI Calorie & Nutrition Tracker.
-No Streamlit or LLM dependencies here on purpose — keeps this module
-independently testable.
-"""
-
 import os
 import sqlite3
 from datetime import datetime, date, timedelta
@@ -61,20 +53,47 @@ def init_db(db_path: str = DB_PATH):
     conn.close()
 
 
-def insert_food_items(raw_input: str, items: list, meal_type: str, db_path: str = DB_PATH):
+def insert_food_items(raw_input: str, items: list, meal_type: str, log_date: str = None, db_path: str = DB_PATH):
     """items: list of dicts with keys food_item, calories, protein_g, carbs_g, fat_g"""
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
     now = datetime.now().isoformat()
-    today = date.today().isoformat()
+    target_date = log_date or date.today().isoformat()
     for item in items:
         cur.execute("""
             INSERT INTO logs (logged_at, log_date, meal_type, raw_input, food_item, calories, protein_g, carbs_g, fat_g)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (now, today, meal_type, raw_input, item["food_item"], item["calories"],
+        """, (now, target_date, meal_type, raw_input, item["food_item"], item["calories"],
               item["protein_g"], item["carbs_g"], item["fat_g"]))
     conn.commit()
     conn.close()
+
+
+def delete_meal(log_date: str, meal_type: str, db_path: str = DB_PATH) -> int:
+    """Deletes all logged items for a given date + meal type. Returns the number of rows deleted."""
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM logs WHERE log_date = ? AND meal_type = ?", (log_date, meal_type))
+    deleted = cur.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def replace_meal_items(raw_input: str, items: list, meal_type: str, log_date: str = None, db_path: str = DB_PATH) -> int:
+    """
+    Replaces whatever was previously logged for this meal_type on this date
+    with the new items — deletes existing entries for (log_date, meal_type)
+    first, then inserts the new ones. This only touches the specified date;
+    the same meal type on other days is untouched.
+
+    Returns the number of old rows that were deleted (0 if this is a fresh
+    log for that meal/date, useful for showing "replaced X items" in the UI).
+    """
+    target_date = log_date or date.today().isoformat()
+    deleted = delete_meal(target_date, meal_type, db_path)
+    insert_food_items(raw_input, items, meal_type, target_date, db_path)
+    return deleted
 
 
 def get_logs(start_date: str = None, end_date: str = None, db_path: str = DB_PATH) -> pd.DataFrame:

@@ -1,13 +1,3 @@
-"""
-app.py
-
-AI Calorie & Nutrition Tracker — Streamlit frontend.
-
-Log meals in natural language (tagged by meal type), have an LLM parse them
-into structured nutrition data, persist to SQLite, and view per-meal totals,
-daily totals, rolling averages, hydration, and a logging streak.
-"""
-
 import os
 from datetime import date, timedelta, datetime
 
@@ -105,8 +95,11 @@ if not frequent.empty:
             with qcol2:
                 if st.button("Add", key=f"quickadd_{row['raw_input']}"):
                     items = db.get_items_for_raw_input(row["raw_input"])
-                    db.insert_food_items(row["raw_input"], items, quick_meal_type)
-                    st.success(f"Re-logged '{row['raw_input']}' under {quick_meal_type}")
+                    deleted = db.replace_meal_items(row["raw_input"], items, quick_meal_type)
+                    if deleted > 0:
+                        st.success(f"Updated {quick_meal_type}: replaced {deleted} previous item(s) with '{row['raw_input']}'")
+                    else:
+                        st.success(f"Re-logged '{row['raw_input']}' under {quick_meal_type}")
                     st.rerun()
 
 meal_type = st.selectbox("Which meal is this?", db.MEAL_TYPES)
@@ -122,8 +115,11 @@ if st.button("Log with AI", type="primary"):
         with st.spinner("Parsing with AI..."):
             try:
                 items = llm_parser.parse_food_description(user_input)
-                db.insert_food_items(user_input, items, meal_type)
-                st.success(f"Logged {len(items)} item(s) under {meal_type}!")
+                deleted = db.replace_meal_items(user_input, items, meal_type)
+                if deleted > 0:
+                    st.success(f"Updated {meal_type}: replaced {deleted} previous item(s) with {len(items)} new item(s).")
+                else:
+                    st.success(f"Logged {len(items)} item(s) under {meal_type}!")
                 for item in items:
                     st.write(
                         f"- **{item['food_item']}**: {item['calories']} kcal, "

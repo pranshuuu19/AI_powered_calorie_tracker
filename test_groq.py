@@ -1,14 +1,3 @@
-"""
-test_groq.py — standalone diagnostic script.
-
-Run this directly (not through Streamlit) to isolate whether a Groq API
-call succeeds, fails clearly, or hangs — same idea as the earlier Gemini
-diagnostic, adapted for Groq.
-
-Usage:
-    python test_groq.py
-"""
-
 import os
 import sys
 import time
